@@ -34,6 +34,8 @@ Select your board/port, then upload.
 
 ## 4) How to Play
 - Press joystick button to start.
+- Player 1 places 4 ships on the left board (move + press).
+- Then Player 2 places 4 ships on the right board (move + press).
 - Move joystick to move the target cursor on the middle shot board of the active player.
 - Press joystick button to fire.
 - Turns alternate: Player 1, then Player 2.
@@ -58,7 +60,7 @@ Each board is 4x4 cells, and each cell is drawn as 2x2 pixels.
 - Board size: `4x4`
 - Ships per side: `4` single-cell ships
 - Player vs Player turns (no AI)
-- Ship placement is random at game start
+- Ship placement is manual at game start
 
 If you want, I can add next:
 1. Manual ship placement for each player

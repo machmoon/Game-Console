@@ -1,14 +1,21 @@
 #include <SPI.h>
+#include <MD_Parola.h>
+#include <MD_MAX72xx.h>
 
 // Hardware pins and display setup
 #define DEVICE_COUNT 4
 #define DIN_PIN 11
 #define CLK_PIN 13
 #define CS_PIN 10
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW
 
 #define JOY_X_PIN A0
 #define JOY_Y_PIN A1
 #define JOY_SW_PIN A2
+#define BUZZER_PIN 7
+
+MD_Parola intro_display = MD_Parola(HARDWARE_TYPE, CS_PIN, DEVICE_COUNT);
+const char intro_text[] = "WELCOME TO BATTLESHIP! PRESS TO START.";
 
 // Basic game settings
 const uint8_t BOARD_SIZE = 4;
@@ -34,6 +41,8 @@ enum ShotState : uint8_t {
 
 enum GameState : uint8_t {
   STATE_START = 0,
+  STATE_PLACE_P1,
+  STATE_PLACE_P2,
   STATE_P1_TURN,
   STATE_P2_TURN,
   STATE_GAME_OVER
@@ -47,6 +56,9 @@ ShotState player2_shots[BOARD_SIZE][BOARD_SIZE];
 
 GameState game_state = STATE_START;
 uint8_t winner_player = 0;
+bool win_song_played = false;
+uint8_t player1_ships_placed = 0;
+uint8_t player2_ships_placed = 0;
 
 uint8_t cursor_x = 0;
 uint8_t cursor_y = 0;
@@ -145,6 +157,31 @@ void max7219_init() {
   update_matrix();
 }
 
+void play_tone_note(uint16_t freq_hz, uint16_t note_ms, uint16_t gap_ms) {
+  tone(BUZZER_PIN, freq_hz, note_ms);
+  delay(note_ms + gap_ms);
+  noTone(BUZZER_PIN);
+}
+
+void play_hit_sound() {
+  play_tone_note(1200, 70, 8);
+  play_tone_note(1650, 80, 0);
+}
+
+void play_miss_sound() {
+  play_tone_note(520, 80, 6);
+  play_tone_note(360, 120, 0);
+}
+
+void play_win_song() {
+  play_tone_note(784, 120, 25);   // G5
+  play_tone_note(988, 120, 25);   // B5
+  play_tone_note(1175, 120, 25);  // D6
+  play_tone_note(1568, 220, 40);  // G6
+  play_tone_note(1319, 140, 20);  // E6
+  play_tone_note(1568, 280, 0);   // G6
+}
+
 void clear_cell_board(CellState board[][BOARD_SIZE]) {
 
   for (uint8_t y = 0; y < BOARD_SIZE; y++) {
@@ -158,18 +195,6 @@ void clear_shot_board(ShotState board[][BOARD_SIZE]) {
   for (uint8_t y = 0; y < BOARD_SIZE; y++) {
     for (uint8_t x = 0; x < BOARD_SIZE; x++) {
       board[y][x] = SHOT_NONE;
-    }
-  }
-}
-
-void place_random_ships(CellState board[][BOARD_SIZE]) {
-  uint8_t placed = 0;
-  while (placed < SHIP_COUNT) {
-    uint8_t x = random(0, BOARD_SIZE);
-    uint8_t y = random(0, BOARD_SIZE);
-    if (board[y][x] == CELL_EMPTY) {
-      board[y][x] = CELL_SHIP;
-      placed++;
     }
   }
 }
@@ -188,17 +213,15 @@ void start_new_game() {
 
   clear_cell_board(player1_board);
   clear_cell_board(player2_board);
-
   clear_shot_board(player1_shots);
   clear_shot_board(player2_shots);
-
-  place_random_ships(player1_board);
-  place_random_ships(player2_board);
-
+  player1_ships_placed = 0;
+  player2_ships_placed = 0;
   cursor_x = 0;
   cursor_y = 0;
   winner_player = 0;
-  game_state = STATE_P1_TURN;
+  win_song_played = false;
+  game_state = STATE_PLACE_P1;
 }
 
 uint8_t cell_base_x(uint8_t origin_x, uint8_t cell_x) {
@@ -268,13 +291,20 @@ void draw_shot_pattern(uint8_t base_x, uint8_t base_y, ShotState shot, bool curs
 }
 
 void draw_turn_marker() {
-  if (game_state == STATE_P1_TURN && blink_on) {
-    set_pixel(7, ORIGIN_P1_SHOTS, true);
-    set_pixel(7, ORIGIN_P1_SHOTS + 1, true);
-  } else if (game_state == STATE_P2_TURN && blink_on) {
-    set_pixel(7, ORIGIN_P2_SHOTS + 6, true);
-    set_pixel(7, ORIGIN_P2_SHOTS + 7, true);
-  } else if (game_state == STATE_GAME_OVER && blink_on) {
+  // if (game_state == STATE_PLACE_P1 && blink_on) {
+  //   set_pixel(7, ORIGIN_P1_BOARD, true);
+  //   set_pixel(7, ORIGIN_P1_BOARD + 1, true);
+  // } else if (game_state == STATE_PLACE_P2 && blink_on) {
+  //   set_pixel(7, ORIGIN_P2_BOARD + 6, true);
+  //   set_pixel(7, ORIGIN_P2_BOARD + 7, true);
+  // } else if (game_state == STATE_P1_TURN && blink_on) {
+  //   set_pixel(7, ORIGIN_P1_SHOTS, true);
+  //   set_pixel(7, ORIGIN_P1_SHOTS + 1, true);
+  // } else if (game_state == STATE_P2_TURN && blink_on) {
+  //   set_pixel(7, ORIGIN_P2_SHOTS + 6, true);
+  //   set_pixel(7, ORIGIN_P2_SHOTS + 7, true);
+  // } else 
+  if (game_state == STATE_GAME_OVER && blink_on) {
     for (uint8_t y = 0; y < 8; y++) {
       for (uint8_t x = 0; x < 32; x++) {
         set_pixel(y, x, true);
@@ -299,8 +329,13 @@ void render_game() {
       draw_cell_pattern(p1_board_x, py, player1_board[y][x], false);
       draw_cell_pattern(p2_board_x, py, player2_board[y][x], false);
 
+      bool p1_place_cursor = (game_state == STATE_PLACE_P1 && x == cursor_x && y == cursor_y);
+      bool p2_place_cursor = (game_state == STATE_PLACE_P2 && x == cursor_x && y == cursor_y);
       bool p1_cursor = (game_state == STATE_P1_TURN && x == cursor_x && y == cursor_y);
       bool p2_cursor = (game_state == STATE_P2_TURN && x == cursor_x && y == cursor_y);
+
+      if (p1_place_cursor) draw_cell_pattern(p1_board_x, py, player1_board[y][x], true);
+      if (p2_place_cursor) draw_cell_pattern(p2_board_x, py, player2_board[y][x], true);
 
       draw_shot_pattern(p1_shots_x, py, player1_shots[y][x], p1_cursor);
       draw_shot_pattern(p2_shots_x, py, player2_shots[y][x], p2_cursor);
@@ -311,6 +346,40 @@ void render_game() {
   }
 
   draw_turn_marker();
+  update_matrix();
+}
+
+void draw_shot_matrix_blast(uint8_t attacker_player, uint8_t phase) {
+  // Full 8x8 splash animation on the current shooter's shot module.
+  uint8_t start_x = (attacker_player == 1) ? ORIGIN_P1_SHOTS : ORIGIN_P2_SHOTS;
+  for (uint8_t y = 0; y < 8; y++) {
+    for (uint8_t x = start_x; x < start_x + 8; x++) {
+      bool on = false;
+      if (phase == 0) on = ((x + y) % 2 == 0);
+      else if (phase == 1) on = true;
+      else on = ((x + y) % 2 == 1);
+      set_pixel(y, x, on);
+    }
+  }
+}
+
+void animate_hit(uint8_t attacker_player) {
+  render_game();
+  draw_shot_matrix_blast(attacker_player, 0);
+  update_matrix();
+  delay(70);
+
+  render_game();
+  draw_shot_matrix_blast(attacker_player, 1);
+  update_matrix();
+  delay(90);
+
+  render_game();
+  draw_shot_matrix_blast(attacker_player, 2);
+  update_matrix();
+  delay(70);
+
+  render_game();
   update_matrix();
 }
 
@@ -374,10 +443,13 @@ void fire_shot_for_player(uint8_t attacker) {
   if (target == CELL_SHIP) {
     target = CELL_HIT;
     shot = SHOT_HIT;
+    play_hit_sound();
+    animate_hit(attacker);
   } else {
 
     if (target == CELL_EMPTY) target = CELL_MISS;
     shot = SHOT_MISS;
+    play_miss_sound();
   }
 
   if (count_remaining_ships(defender_board) == 0) {
@@ -389,6 +461,28 @@ void fire_shot_for_player(uint8_t attacker) {
   game_state = (attacker == 1) ? STATE_P2_TURN : STATE_P1_TURN;
 }
 
+void place_ship_for_player(uint8_t player_id) {
+  CellState (*board)[BOARD_SIZE] = (player_id == 1) ? player1_board : player2_board;
+  uint8_t *placed_count = (player_id == 1) ? &player1_ships_placed : &player2_ships_placed;
+
+  if (*placed_count >= SHIP_COUNT) return;
+  if (board[cursor_y][cursor_x] != CELL_EMPTY) {
+    play_miss_sound();
+    return;
+  }
+
+  board[cursor_y][cursor_x] = CELL_SHIP;
+  (*placed_count)++;
+  play_hit_sound();
+
+  if (*placed_count < SHIP_COUNT) return;
+
+  cursor_x = 0;
+  cursor_y = 0;
+  if (player_id == 1) game_state = STATE_PLACE_P2;
+  else game_state = STATE_P1_TURN;
+}
+
 void update_blink() {
   unsigned long now = millis();
   if (now - last_blink_at >= BLINK_MS) {
@@ -398,47 +492,29 @@ void update_blink() {
 }
 
 void show_start_screen() {
-  clear_matrix();
-
-  for (uint8_t y = 1; y < 7; y++) {
-    set_pixel(y, ORIGIN_P1_BOARD + 1, true);
-    set_pixel(y, ORIGIN_P1_BOARD + 6, true);
-    set_pixel(y, ORIGIN_P1_SHOTS + 1, true);
-    set_pixel(y, ORIGIN_P1_SHOTS + 6, true);
-    set_pixel(y, ORIGIN_P2_SHOTS + 1, true);
-    set_pixel(y, ORIGIN_P2_SHOTS + 6, true);
-    set_pixel(y, ORIGIN_P2_BOARD + 1, true);
-    set_pixel(y, ORIGIN_P2_BOARD + 6, true);
-
+  static bool intro_ready = false;
+  if (!intro_ready) {
+    intro_display.displayText(intro_text, PA_CENTER, 70, 800, PA_SCROLL_LEFT, PA_SCROLL_LEFT);
+    intro_ready = true;
   }
 
-
-
-  for (uint8_t x = 1; x < 7; x++) {
-    set_pixel(1, ORIGIN_P1_BOARD + x, true);
-    set_pixel(6, ORIGIN_P1_BOARD + x, true);
-    set_pixel(1, ORIGIN_P1_SHOTS + x, true);
-    set_pixel(6, ORIGIN_P1_SHOTS + x, true);
-    set_pixel(1, ORIGIN_P2_SHOTS + x, true);
-    set_pixel(6, ORIGIN_P2_SHOTS + x, true);
-    set_pixel(1, ORIGIN_P2_BOARD + x, true);
-    set_pixel(6, ORIGIN_P2_BOARD + x, true);
+  if (intro_display.displayAnimate()) {
+    intro_display.displayReset();
   }
 
-  if (blink_on) {
-    for (uint8_t x = 14; x <= 17; x++) {
-      set_pixel(3, x, true);
-      set_pixel(4, x, true);
-    }
+  if (button_pressed()) {
+    intro_ready = false;
+    start_new_game();
   }
-
-  update_matrix();
 }
 
 void setup() {
   pinMode(JOY_SW_PIN, INPUT_PULLUP);
+  pinMode(BUZZER_PIN, OUTPUT);
 
   max7219_init();
+  intro_display.begin();
+  intro_display.setIntensity(3);
   randomSeed(analogRead(A0) + analogRead(A1) + micros());
 }
 
@@ -449,18 +525,27 @@ void loop() {
   if (game_state == STATE_START) {
 
     show_start_screen();
-    if (button_pressed()) start_new_game();
 
     return;
   }
 
-  if (game_state == STATE_P1_TURN) {
+  if (game_state == STATE_PLACE_P1) {
+    update_cursor_from_joystick();
+    if (button_pressed()) place_ship_for_player(1);
+  } else if (game_state == STATE_PLACE_P2) {
+    update_cursor_from_joystick();
+    if (button_pressed()) place_ship_for_player(2);
+  } else if (game_state == STATE_P1_TURN) {
     update_cursor_from_joystick();
     if (button_pressed()) fire_shot_for_player(1);
   } else if (game_state == STATE_P2_TURN) {
     update_cursor_from_joystick();
     if (button_pressed()) fire_shot_for_player(2);
   } else if (game_state == STATE_GAME_OVER) {
+    if (!win_song_played) {
+      play_win_song();
+      win_song_played = true;
+    }
     if (button_pressed()) game_state = STATE_START;
   }
 
