@@ -34,26 +34,35 @@ Select your board/port, then upload.
 
 ## 4) How to Play
 - Press joystick button to start.
-- Move joystick to move the target cursor on the **right board** (enemy).
+- Move joystick to move the target cursor on the middle shot board of the active player.
 - Press joystick button to fire.
-- Left board is your ships; right board is enemy state.
+- Turns alternate: Player 1, then Player 2.
 - Press joystick button on game-over screen to go back to start.
 
-## 5) Display Legend (each cell is 2x2 pixels)
+## 5) Display Layout (left to right)
+- Module 1 (left): Player 1 board
+- Module 2 (middle-left): Player 1 shot attempts
+- Module 3 (middle-right): Player 2 shot attempts
+- Module 4 (right): Player 2 board
+
+Each board is 4x4 cells, and each cell is drawn as 2x2 pixels.
+
+## 6) Display Legend
 - Empty: off
-- Ship (your board): diagonal pixels
+- Ship (board): diagonal pixels
 - Miss: 1 pixel
 - Hit: full 2x2 block
-- Cursor (enemy board): opposite diagonal blinking
+- Cursor (active player shot board): opposite diagonal blinking
 
-## 6) Current Game Rules
+## 7) Current Game Rules
 - Board size: `4x4`
 - Ships per side: `4` single-cell ships
-- Enemy AI: random legal shot
+- Player vs Player turns (no AI)
+- Ship placement is random at game start
 
 If you want, I can add next:
-1. Smarter AI (hunt/target)
+1. Manual ship placement for each player
 2. Multi-cell ships with orientation
-3. Difficulty levels
+3. Turn handoff screen (hide the other side before passing)
 4. Score + win/loss counter
 # Battleship

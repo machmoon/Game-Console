@@ -12,7 +12,12 @@
 
 // Basic game settings
 const uint8_t BOARD_SIZE = 4;
-const uint8_t SHIP_COUNT = 4; // single-cell ships keep rounds quick on this small display
+const uint8_t SHIP_COUNT = 4;
+
+const uint8_t ORIGIN_P1_BOARD = 0;   // left-most module
+const uint8_t ORIGIN_P1_SHOTS = 8;   // middle-left module
+const uint8_t ORIGIN_P2_SHOTS = 16;  // middle-right module
+const uint8_t ORIGIN_P2_BOARD = 24;  // right-most module
 
 enum CellState : uint8_t {
   CELL_EMPTY = 0,
@@ -21,20 +26,29 @@ enum CellState : uint8_t {
   CELL_HIT
 };
 
+enum ShotState : uint8_t {
+  SHOT_NONE = 0,
+  SHOT_MISS,
+  SHOT_HIT
+};
+
 enum GameState : uint8_t {
   STATE_START = 0,
-  STATE_PLAYER_TURN,
-  STATE_AI_TURN,
+  STATE_P1_TURN,
+  STATE_P2_TURN,
   STATE_GAME_OVER
 };
 
-CellState player_board[BOARD_SIZE][BOARD_SIZE];
-CellState enemy_board[BOARD_SIZE][BOARD_SIZE];
+CellState player1_board[BOARD_SIZE][BOARD_SIZE];
+CellState player2_board[BOARD_SIZE][BOARD_SIZE];
+ShotState player1_shots[BOARD_SIZE][BOARD_SIZE];
+ShotState player2_shots[BOARD_SIZE][BOARD_SIZE];
+
 GameState game_state = STATE_START;
+uint8_t winner_player = 0;
 
 uint8_t cursor_x = 0;
 uint8_t cursor_y = 0;
-bool player_won = false;
 
 unsigned long last_move_at = 0;
 unsigned long last_blink_at = 0;
@@ -46,12 +60,10 @@ const uint16_t BLINK_MS = 250;
 // Display buffer: [row][device], each byte is one 8-pixel row of that module.
 uint8_t matrix_rows[8][DEVICE_COUNT];
 
-// Flip these if your module is mirrored/upside-down.
 const bool FLIP_X = false;
 const bool FLIP_Y = false;
 
 // MAX7219 registers
-const uint8_t REG_NOOP = 0x00;
 const uint8_t REG_DIGIT0 = 0x01;
 const uint8_t REG_DECODE_MODE = 0x09;
 const uint8_t REG_INTENSITY = 0x0A;
@@ -71,7 +83,6 @@ void send_all(uint8_t reg, uint8_t data) {
 void send_row(uint8_t reg, const uint8_t data_by_device[DEVICE_COUNT]) {
   digitalWrite(CS_PIN, LOW);
 
-  // Shift farthest module first, nearest last.
   for (int8_t dev = DEVICE_COUNT - 1; dev >= 0; dev--) {
     SPI.transfer(reg);
     SPI.transfer(data_by_device[dev]);
@@ -117,24 +128,30 @@ void max7219_init() {
   send_all(REG_SCAN_LIMIT, 7);
   send_all(REG_DECODE_MODE, 0);
   send_all(REG_DISPLAY_TEST, 0);
-  send_all(REG_INTENSITY, 3); // 0..15
-  send_all(REG_SHUTDOWN, 1);  // normal operation
+  send_all(REG_INTENSITY, 3);
+  send_all(REG_SHUTDOWN, 1);
 
   clear_matrix();
   update_matrix();
 }
 
-// Helpers
-void clear_boards() {
+void clear_cell_board(CellState board[][BOARD_SIZE]) {
   for (uint8_t y = 0; y < BOARD_SIZE; y++) {
     for (uint8_t x = 0; x < BOARD_SIZE; x++) {
-      player_board[y][x] = CELL_EMPTY;
-      enemy_board[y][x] = CELL_EMPTY;
+      board[y][x] = CELL_EMPTY;
     }
   }
 }
 
-void place_random_ships(CellState board[BOARD_SIZE][BOARD_SIZE]) {
+void clear_shot_board(ShotState board[][BOARD_SIZE]) {
+  for (uint8_t y = 0; y < BOARD_SIZE; y++) {
+    for (uint8_t x = 0; x < BOARD_SIZE; x++) {
+      board[y][x] = SHOT_NONE;
+    }
+  }
+}
+
+void place_random_ships(CellState board[][BOARD_SIZE]) {
   uint8_t placed = 0;
   while (placed < SHIP_COUNT) {
     uint8_t x = random(0, BOARD_SIZE);
@@ -146,11 +163,7 @@ void place_random_ships(CellState board[BOARD_SIZE][BOARD_SIZE]) {
   }
 }
 
-bool is_fireable(CellState cell) {
-  return (cell == CELL_EMPTY || cell == CELL_SHIP);
-}
-
-uint8_t count_remaining_ships(CellState board[BOARD_SIZE][BOARD_SIZE]) {
+uint8_t count_remaining_ships(CellState board[][BOARD_SIZE]) {
   uint8_t ships = 0;
   for (uint8_t y = 0; y < BOARD_SIZE; y++) {
     for (uint8_t x = 0; x < BOARD_SIZE; x++) {
@@ -161,40 +174,37 @@ uint8_t count_remaining_ships(CellState board[BOARD_SIZE][BOARD_SIZE]) {
 }
 
 void start_new_game() {
-  clear_boards();
-  place_random_ships(player_board);
-  place_random_ships(enemy_board);
+  clear_cell_board(player1_board);
+  clear_cell_board(player2_board);
+  clear_shot_board(player1_shots);
+  clear_shot_board(player2_shots);
+
+  place_random_ships(player1_board);
+  place_random_ships(player2_board);
+
   cursor_x = 0;
   cursor_y = 0;
-  player_won = false;
-  game_state = STATE_PLAYER_TURN;
+  winner_player = 0;
+  game_state = STATE_P1_TURN;
 }
 
-// Screen layout:
-// each board cell uses a 2x2 block of pixels.
-// Player board is on the left (x 0..7), enemy board on the right (x 24..31).
-uint8_t cell_base_x(bool is_enemy_board, uint8_t cell_x) {
-  uint8_t board_origin_x = is_enemy_board ? 24 : 0;
-  return board_origin_x + cell_x * 2;
+uint8_t cell_base_x(uint8_t origin_x, uint8_t cell_x) {
+  return origin_x + cell_x * 2;
 }
 
 uint8_t cell_base_y(uint8_t cell_y) {
   return cell_y * 2;
 }
 
-void draw_cell_pattern(uint8_t base_x, uint8_t base_y, CellState state, bool show_ship, bool cursor_here) {
+void draw_cell_pattern(uint8_t base_x, uint8_t base_y, CellState state, bool cursor_here) {
   bool p00 = false, p10 = false, p01 = false, p11 = false;
 
-  // 2x2 cell symbols:
-  // miss = one dot, ship = diagonal, hit = full block
   switch (state) {
     case CELL_EMPTY:
       break;
     case CELL_SHIP:
-      if (show_ship) {
-        p00 = true;
-        p11 = true;
-      }
+      p00 = true;
+      p11 = true;
       break;
     case CELL_MISS:
       p00 = true;
@@ -208,7 +218,29 @@ void draw_cell_pattern(uint8_t base_x, uint8_t base_y, CellState state, bool sho
   }
 
   if (cursor_here && blink_on) {
-    // Cursor shows up as the opposite diagonal.
+    p10 = true;
+    p01 = true;
+  }
+
+  set_pixel(base_y, base_x, p00);
+  set_pixel(base_y, base_x + 1, p10);
+  set_pixel(base_y + 1, base_x, p01);
+  set_pixel(base_y + 1, base_x + 1, p11);
+}
+
+void draw_shot_pattern(uint8_t base_x, uint8_t base_y, ShotState shot, bool cursor_here) {
+  bool p00 = false, p10 = false, p01 = false, p11 = false;
+
+  if (shot == SHOT_MISS) {
+    p00 = true;
+  } else if (shot == SHOT_HIT) {
+    p00 = true;
+    p10 = true;
+    p01 = true;
+    p11 = true;
+  }
+
+  if (cursor_here && blink_on) {
     p10 = true;
     p01 = true;
   }
@@ -220,46 +252,41 @@ void draw_cell_pattern(uint8_t base_x, uint8_t base_y, CellState state, bool sho
 }
 
 void draw_turn_marker() {
-  // Middle area (x 13..18) shows turn state:
-  // player turn = left marker, AI turn = right marker, game over = winner block
-  for (uint8_t y = 0; y < 8; y++) {
-    for (uint8_t x = 13; x <= 18; x++) {
-      set_pixel(y, x, false);
-    }
-  }
-
-  if (game_state == STATE_PLAYER_TURN) {
-    set_pixel(3, 13, true); set_pixel(4, 13, true);
-    set_pixel(3, 14, true); set_pixel(4, 14, true);
-    set_pixel(3, 15, true); set_pixel(4, 15, true);
-  } else if (game_state == STATE_AI_TURN) {
-    set_pixel(3, 16, true); set_pixel(4, 16, true);
-    set_pixel(3, 17, true); set_pixel(4, 17, true);
-    set_pixel(3, 18, true); set_pixel(4, 18, true);
-  } else if (game_state == STATE_GAME_OVER) {
-    uint8_t x_start = player_won ? 13 : 16;
-    for (uint8_t y = 2; y <= 5; y++) {
-      for (uint8_t x = x_start; x < x_start + 3; x++) {
-        set_pixel(y, x, blink_on);
+  if (game_state == STATE_P1_TURN && blink_on) {
+    set_pixel(7, ORIGIN_P1_SHOTS, true);
+    set_pixel(7, ORIGIN_P1_SHOTS + 1, true);
+  } else if (game_state == STATE_P2_TURN && blink_on) {
+    set_pixel(7, ORIGIN_P2_SHOTS + 6, true);
+    set_pixel(7, ORIGIN_P2_SHOTS + 7, true);
+  } else if (game_state == STATE_GAME_OVER && blink_on) {
+    for (uint8_t y = 0; y < 8; y++) {
+      for (uint8_t x = 0; x < 32; x++) {
+        set_pixel(y, x, true);
       }
     }
   }
 }
 
-void render_boards() {
+void render_game() {
   clear_matrix();
 
   for (uint8_t y = 0; y < BOARD_SIZE; y++) {
     for (uint8_t x = 0; x < BOARD_SIZE; x++) {
-      uint8_t left_x = cell_base_x(false, x);
-      uint8_t right_x = cell_base_x(true, x);
-      uint8_t px_y = cell_base_y(y);
+      uint8_t py = cell_base_y(y);
 
-      // Show your ships on your board.
-      draw_cell_pattern(left_x, px_y, player_board[y][x], true, false);
-      // Hide enemy ships until they get hit.
-      bool cursor_here = (game_state == STATE_PLAYER_TURN && x == cursor_x && y == cursor_y);
-      draw_cell_pattern(right_x, px_y, enemy_board[y][x], false, cursor_here);
+      uint8_t p1_board_x = cell_base_x(ORIGIN_P1_BOARD, x);
+      uint8_t p1_shots_x = cell_base_x(ORIGIN_P1_SHOTS, x);
+      uint8_t p2_shots_x = cell_base_x(ORIGIN_P2_SHOTS, x);
+      uint8_t p2_board_x = cell_base_x(ORIGIN_P2_BOARD, x);
+
+      draw_cell_pattern(p1_board_x, py, player1_board[y][x], false);
+      draw_cell_pattern(p2_board_x, py, player2_board[y][x], false);
+
+      bool p1_cursor = (game_state == STATE_P1_TURN && x == cursor_x && y == cursor_y);
+      bool p2_cursor = (game_state == STATE_P2_TURN && x == cursor_x && y == cursor_y);
+
+      draw_shot_pattern(p1_shots_x, py, player1_shots[y][x], p1_cursor);
+      draw_shot_pattern(p2_shots_x, py, player2_shots[y][x], p2_cursor);
     }
   }
 
@@ -267,7 +294,6 @@ void render_boards() {
   update_matrix();
 }
 
-// Joystick input
 bool button_pressed() {
   static bool last_state = HIGH;
   bool current = digitalRead(JOY_SW_PIN);
@@ -290,7 +316,6 @@ void update_cursor_from_joystick() {
   int8_t dy = axis_direction(analogRead(JOY_Y_PIN));
   if (dx == 0 && dy == 0) return;
 
-  // Move one direction at a time; left/right takes priority.
   if (dx != 0) {
     int16_t next_x = (int16_t)cursor_x + dx;
     if (next_x >= 0 && next_x < BOARD_SIZE) {
@@ -310,39 +335,29 @@ void update_cursor_from_joystick() {
   }
 }
 
-// Game flow
-void player_fire() {
-  CellState &cell = enemy_board[cursor_y][cursor_x];
-  if (!is_fireable(cell)) return;
+void fire_shot_for_player(uint8_t attacker) {
+  ShotState (*attacker_shots)[BOARD_SIZE] = (attacker == 1) ? player1_shots : player2_shots;
+  CellState (*defender_board)[BOARD_SIZE] = (attacker == 1) ? player2_board : player1_board;
 
-  if (cell == CELL_SHIP) cell = CELL_HIT;
-  else cell = CELL_MISS;
+  ShotState &shot = attacker_shots[cursor_y][cursor_x];
+  if (shot != SHOT_NONE) return;
 
-  if (count_remaining_ships(enemy_board) == 0) {
-    player_won = true;
-    game_state = STATE_GAME_OVER;
+  CellState &target = defender_board[cursor_y][cursor_x];
+  if (target == CELL_SHIP) {
+    target = CELL_HIT;
+    shot = SHOT_HIT;
   } else {
-    game_state = STATE_AI_TURN;
+    if (target == CELL_EMPTY) target = CELL_MISS;
+    shot = SHOT_MISS;
   }
-}
 
-void ai_fire() {
-  // Simple AI: pick a random cell it hasn't fired at yet.
-  uint8_t x, y;
-  do {
-    x = random(0, BOARD_SIZE);
-    y = random(0, BOARD_SIZE);
-  } while (!is_fireable(player_board[y][x]));
-
-  if (player_board[y][x] == CELL_SHIP) player_board[y][x] = CELL_HIT;
-  else player_board[y][x] = CELL_MISS;
-
-  if (count_remaining_ships(player_board) == 0) {
-    player_won = false;
+  if (count_remaining_ships(defender_board) == 0) {
+    winner_player = attacker;
     game_state = STATE_GAME_OVER;
-  } else {
-    game_state = STATE_PLAYER_TURN;
+    return;
   }
+
+  game_state = (attacker == 1) ? STATE_P2_TURN : STATE_P1_TURN;
 }
 
 void update_blink() {
@@ -354,31 +369,34 @@ void update_blink() {
 }
 
 void show_start_screen() {
-  // Left icon = player side, right icon = enemy side.
   clear_matrix();
 
   for (uint8_t y = 1; y < 7; y++) {
-    set_pixel(y, 1, true);
-    set_pixel(y, 6, true);
-    set_pixel(y, 25, true);
-    set_pixel(y, 30, true);
-  }
-  for (uint8_t x = 1; x < 7; x++) {
-    set_pixel(1, x, true);
-    set_pixel(6, x, true);
-    set_pixel(1, x + 24, true);
-    set_pixel(6, x + 24, true);
+    set_pixel(y, ORIGIN_P1_BOARD + 1, true);
+    set_pixel(y, ORIGIN_P1_BOARD + 6, true);
+    set_pixel(y, ORIGIN_P1_SHOTS + 1, true);
+    set_pixel(y, ORIGIN_P1_SHOTS + 6, true);
+    set_pixel(y, ORIGIN_P2_SHOTS + 1, true);
+    set_pixel(y, ORIGIN_P2_SHOTS + 6, true);
+    set_pixel(y, ORIGIN_P2_BOARD + 1, true);
+    set_pixel(y, ORIGIN_P2_BOARD + 6, true);
   }
 
-  // Blinking center box means "press to start."
+  for (uint8_t x = 1; x < 7; x++) {
+    set_pixel(1, ORIGIN_P1_BOARD + x, true);
+    set_pixel(6, ORIGIN_P1_BOARD + x, true);
+    set_pixel(1, ORIGIN_P1_SHOTS + x, true);
+    set_pixel(6, ORIGIN_P1_SHOTS + x, true);
+    set_pixel(1, ORIGIN_P2_SHOTS + x, true);
+    set_pixel(6, ORIGIN_P2_SHOTS + x, true);
+    set_pixel(1, ORIGIN_P2_BOARD + x, true);
+    set_pixel(6, ORIGIN_P2_BOARD + x, true);
+  }
+
   if (blink_on) {
-    for (uint8_t y = 2; y <= 5; y++) {
-      set_pixel(y, 14, true);
-      set_pixel(y, 17, true);
-    }
     for (uint8_t x = 14; x <= 17; x++) {
-      set_pixel(2, x, true);
-      set_pixel(5, x, true);
+      set_pixel(3, x, true);
+      set_pixel(4, x, true);
     }
   }
 
@@ -401,16 +419,15 @@ void loop() {
     return;
   }
 
-  if (game_state == STATE_PLAYER_TURN) {
+  if (game_state == STATE_P1_TURN) {
     update_cursor_from_joystick();
-    if (button_pressed()) player_fire();
-  } else if (game_state == STATE_AI_TURN) {
-    // Tiny pause so you can see the AI turn happen.
-    delay(250);
-    ai_fire();
+    if (button_pressed()) fire_shot_for_player(1);
+  } else if (game_state == STATE_P2_TURN) {
+    update_cursor_from_joystick();
+    if (button_pressed()) fire_shot_for_player(2);
   } else if (game_state == STATE_GAME_OVER) {
     if (button_pressed()) game_state = STATE_START;
   }
 
-  render_boards();
+  render_game();
 }
