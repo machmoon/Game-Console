@@ -1,4 +1,4 @@
-# Battleship LED Matrix Console
+#LED Matrix Console
 
 Arduino + MAX7219 (8x32) project with a game console and tools.
 
